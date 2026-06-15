@@ -1,0 +1,42 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: trace-notify-engine
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/tracenotify}
+    username: ${DB_USERNAME:tracenotify}
+    password: ${DB_PASSWORD:tracenotify}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_GROUP_ID:trace-notify}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    producer:
+      acks: all
+    listener:
+      ack-mode: manual
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:change-me-to-a-long-random-secret-at-least-256-bits-long-value}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  kafka:
+    topics:
+      inapp: notifications.inapp
+      dlq: notifications.dlq
+      contract-violations: contract.violations
+
+logging:
+  level:
+    com.tracenotify: INFO
