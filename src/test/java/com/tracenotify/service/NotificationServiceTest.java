@@ -14,6 +14,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -27,6 +30,7 @@ class NotificationServiceTest {
     private SimpMessagingTemplate messagingTemplate;
     private UserPreferenceService preferenceService;
     private CausalityService causalityService;
+    private NotificationScenarioRunner scenarioRunner;
     private NotificationService service;
 
     @BeforeEach
@@ -36,27 +40,34 @@ class NotificationServiceTest {
         messagingTemplate = mock(SimpMessagingTemplate.class);
         preferenceService = mock(UserPreferenceService.class);
         causalityService = mock(CausalityService.class);
+        scenarioRunner = mock(NotificationScenarioRunner.class);
         service = new NotificationService(repository, producer, messagingTemplate,
-                preferenceService, causalityService);
+                preferenceService, causalityService, scenarioRunner);
     }
 
     @Test
-    void sendPersistsAndPublishes() {
+    void sendDelegatesToScenarioRunner() {
         UUID userId = UUID.randomUUID();
-        when(repository.save(any(Notification.class))).thenAnswer(inv -> {
-            Notification n = inv.getArgument(0);
-            n.setId(UUID.randomUUID());
-            return n;
-        });
+        UUID notifId = UUID.randomUUID();
+        Notification n = Notification.builder().id(notifId).userId(userId)
+                .title("Title").message("Body").type("ORDER_PLACED")
+                .priority(Priority.HIGH).status(NotificationStatus.UNREAD).build();
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("id", notifId);
+        result.put("status", "SUCCESS");
+        when(scenarioRunner.runScenario(eq(userId), eq("Title"), eq("Body"),
+                eq("OrderService"), eq("ORDER_PLACED"), eq(Priority.HIGH))).thenReturn(result);
+        when(repository.findById(notifId)).thenReturn(Optional.of(n));
+
         NotificationRequest req = new NotificationRequest(
                 "Title", "Body", "ORDER_PLACED", Priority.HIGH, "OrderService");
-
         NotificationResponse resp = service.send(userId, req);
 
-        assertNotNull(resp.id());
+        assertNotNull(resp);
         assertEquals("Title", resp.title());
-        verify(producer).publish(any(NotificationEvent.class));
-        verify(causalityService).record(any(), eq("OrderService"), eq("ORDER_PLACED"), anyMap());
+        verify(scenarioRunner).runScenario(eq(userId), eq("Title"), eq("Body"),
+                eq("OrderService"), eq("ORDER_PLACED"), eq(Priority.HIGH));
     }
 
     @Test

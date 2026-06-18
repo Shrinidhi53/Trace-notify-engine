@@ -71,6 +71,7 @@
         .notif-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
         .notif-dot.UNREAD { background: #667eea; }
         .notif-dot.READ { background: #ccc; }
+        .notif-dot.FAILED { background: #FF4D4F; }
         .notif-body { flex: 1; }
         .notif-body .title { font-weight: 600; font-size: 14px; }
         .notif-body .message { font-size: 13px; color: #666; margin-top: 2px; }
@@ -208,7 +209,8 @@
         <div class="sidebar-nav">
             <div class="nav-item active" onclick="switchTab('overview')"><span class="icon">&#128202;</span> Overview</div>
             <div class="nav-item" onclick="switchTab('notifications')"><span class="icon">&#128276;</span> Notifications</div>
-            <div class="nav-item" onclick="switchTab('send')"><span class="icon">&#9993;</span> Send Notification</div>
+            <div class="nav-item" id="sendNavItem" onclick="switchTab('send')"><span class="icon">&#9993;</span> Send Notification</div>
+            <div class="nav-item" onclick="switchTab('services')"><span class="icon">&#128268;</span> Services</div>
             <div class="nav-item" onclick="switchTab('preferences')"><span class="icon">&#9881;</span> Preferences</div>
             <div class="nav-item" id="adminNavItem" onclick="switchTab('admin')" class="hidden"><span class="icon">&#128272;</span> Admin</div>
         </div>
@@ -257,10 +259,6 @@
                         <label>Title</label>
                         <input type="text" id="sendTitle" placeholder="Notification title" required/>
                     </div>
-                    <div class="form-group">
-                        <label>Type</label>
-                        <input type="text" id="sendType" placeholder="e.g. system, alert" required/>
-                    </div>
                     <div class="form-group full-width">
                         <label>Message</label>
                         <textarea id="sendMessage" placeholder="Notification message" required></textarea>
@@ -276,7 +274,15 @@
                     </div>
                     <div class="form-group">
                         <label>Service Name</label>
-                        <input type="text" id="sendServiceName" placeholder="e.g. auth-service" required/>
+                        <select id="sendServiceName" onchange="updateEventTypes()" required>
+                            <option value="">-- Select a service --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Event Type</label>
+                        <select id="sendEventType" required>
+                            <option value="">-- Select service first --</option>
+                        </select>
                     </div>
                     <div class="form-group full-width" style="display:flex;align-items:flex-end;">
                         <button type="submit" class="btn-primary">Send Notification</button>
@@ -299,9 +305,23 @@
             </div>
         </div>
 
+        <!-- Services Tab -->
+        <div id="tab-services" class="hidden">
+            <div class="page-header"><h1>Registered Services</h1><p>Services that are allowed to send notifications</p></div>
+            <div class="card">
+                <ul class="notif-list" id="servicesList"></ul>
+            </div>
+        </div>
+
         <!-- Admin Tab -->
         <div id="tab-admin" class="hidden">
-            <div class="page-header"><h1>Admin Panel</h1><p>System administration</p></div>
+            <div class="page-header"><h1>Admin Panel</h1><p>System administration &amp; testing</p></div>
+            <div class="card">
+                <h3>&#9888;&#65039; Failure Simulation</h3>
+                <p style="color:#666;font-size:13px;margin-bottom:12px;">Run test scenarios that intentionally fail at different layers to demonstrate causality tracking.</p>
+                <button class="btn-primary" onclick="runFailureSimulations()" id="simulateBtn">Run Failure Scenarios</button>
+                <div id="simulationResults" style="margin-top:12px;"></div>
+            </div>
             <div class="card">
                 <h3>Contract Violations</h3>
                 <ul class="notif-list" id="violationsList"></ul>
@@ -319,9 +339,9 @@
 
 <!-- Trace Modal -->
 <div id="traceModal" class="modal-overlay hidden" onclick="if(event.target===this)closeTraceModal()">
-    <div class="modal">
-        <h3>Causality Trace</h3>
-        <pre id="traceContent"></pre>
+    <div class="modal" style="max-width:650px;">
+        <h3 style="margin-bottom:16px;">Causality Trace</h3>
+        <div id="traceContent" style="max-height:400px;overflow-y:auto;"></div>
         <button class="close-btn" onclick="closeTraceModal()">Close</button>
     </div>
 </div>
@@ -360,8 +380,10 @@
         document.getElementById('userAvatar').textContent = username.charAt(0).toUpperCase();
         if (role === 'ADMIN') {
             document.getElementById('adminNavItem').classList.remove('hidden');
+            document.getElementById('sendNavItem').classList.remove('hidden');
         } else {
             document.getElementById('adminNavItem').classList.add('hidden');
+            document.getElementById('sendNavItem').classList.add('hidden');
         }
         loadOverview();
         loadPreferences();
@@ -375,6 +397,8 @@
         event.currentTarget.classList.add('active');
         if (tab === 'overview') loadOverview();
         if (tab === 'notifications') loadNotifications(0);
+        if (tab === 'send') loadServicesForForm();
+        if (tab === 'services') loadServices();
         if (tab === 'preferences') loadPreferences();
         if (tab === 'admin') { loadViolations(); loadDlq(); }
     }
@@ -394,7 +418,12 @@
         }
         if (!res.ok) {
             const err = await res.json().catch(() => ({ error: 'Request failed' }));
-            throw new Error(err.error || err.message || 'Request failed');
+            const msg = err.error || err.message || 'Request failed';
+            if (msg.includes('User not found')) {
+                handleLogout();
+                throw new Error('Your account was not found. Please register again.');
+            }
+            throw new Error(msg);
         }
         if (res.status === 204) return null;
         const text = await res.text();
@@ -513,11 +542,15 @@
             container.innerHTML = '<div class="empty-state"><div class="icon">&#128276;</div><p>No notifications yet</p></div>';
             return;
         }
-        container.innerHTML = items.map(n => `
-            <li class="notif-item">
+        container.innerHTML = items.map(n => {
+            const isFailed = n.status === 'FAILED';
+            const statusBadge = isFailed ? '<span style="background:#FF4D4F;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:8px;">FAILED</span>' : '';
+            const borderColor = isFailed ? 'border-left:3px solid #FF4D4F;' : '';
+            return `
+            <li class="notif-item" style="${borderColor}">
                 <span class="notif-dot ${n.status}"></span>
                 <div class="notif-body">
-                    <div class="title">${esc(n.title)} <span class="priority-badge priority-${n.priority}">${n.priority}</span></div>
+                    <div class="title">${esc(n.title)} <span class="priority-badge priority-${n.priority}">${n.priority}</span>${statusBadge}</div>
                     <div class="message">${esc(n.message)}</div>
                     <div class="meta">${n.type} &middot; ${new Date(n.createdAt).toLocaleString()}</div>
                 </div>
@@ -526,8 +559,8 @@
                     <button class="btn-sm trace" onclick="showTrace('${n.id}')">Trace</button>
                     <button class="btn-sm delete" onclick="deleteNotif('${n.id}')">Delete</button>
                 </div>
-            </li>
-        `).join('');
+            </li>`;
+        }).join('');
     }
 
     function renderPagination() {
@@ -562,16 +595,89 @@
     async function showTrace(id) {
         try {
             const data = await api('GET', '/notifications/' + id + '/trace');
-            document.getElementById('traceContent').textContent = JSON.stringify(data, null, 2);
+            const steps = data.causality || [];
+            if (!steps.length) {
+                document.getElementById('traceContent').innerHTML = '<p style="color:#888;text-align:center;">No trace steps recorded</p>';
+            } else {
+                document.getElementById('traceContent').innerHTML = steps.map(s => {
+                    const isError = s.metadata && s.metadata.stage === 'ERROR';
+                    const bgColor = isError ? '#FFF0F0' : '#F8F9FA';
+                    const borderColor = isError ? '#FF4D4F' : '#E9ECEF';
+                    const stageIcon = isError ? '&#10060;' : '&#9989;';
+                    const metaHtml = s.metadata ? Object.entries(s.metadata).map(([k,v]) =>
+                        `<span style="background:${isError?'#FFE0E0':'#E8F4FD'};padding:2px 8px;border-radius:4px;font-size:12px;margin-right:6px;display:inline-block;margin-top:4px;"><b>${esc(k)}:</b> ${esc(String(v))}</span>`
+                    ).join('') : '';
+                    return `
+                    <div style="background:${bgColor};border-left:4px solid ${borderColor};padding:12px 16px;margin-bottom:8px;border-radius:6px;">
+                        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                            <span>${stageIcon}</span>
+                            <strong>Step ${s.step}</strong>
+                            <span style="color:#666;font-size:13px;">&mdash; ${esc(s.service)} / ${esc(s.event)}</span>
+                        </div>
+                        <div style="font-size:12px;color:#888;margin-bottom:4px;">${esc(s.timestamp)}</div>
+                        ${metaHtml}
+                    </div>`;
+                }).join('');
+            }
             document.getElementById('traceModal').classList.remove('hidden');
         } catch (err) {
-            document.getElementById('traceContent').textContent = 'No trace data available or error: ' + err.message;
+            document.getElementById('traceContent').innerHTML = '<p style="color:#FF4D4F;">Error loading trace: ' + esc(err.message) + '</p>';
             document.getElementById('traceModal').classList.remove('hidden');
         }
     }
 
     function closeTraceModal() {
         document.getElementById('traceModal').classList.add('hidden');
+    }
+
+    // Services
+    let registeredServices = [];
+
+    async function loadServices() {
+        try {
+            const data = await api('GET', '/api/contracts');
+            registeredServices = data;
+            const container = document.getElementById('servicesList');
+            if (!data.length) {
+                container.innerHTML = '<div class="empty-state"><p>No registered services</p></div>';
+                return;
+            }
+            container.innerHTML = data.map(s => {
+                const types = Array.isArray(s.allowedEventTypes) ? s.allowedEventTypes.join(', ') : JSON.stringify(s.allowedEventTypes);
+                return `
+                <li class="notif-item">
+                    <span class="notif-dot UNREAD"></span>
+                    <div class="notif-body">
+                        <div class="title">${esc(s.serviceName)} <span class="priority-badge priority-${s.priorityLevel}">${s.priorityLevel}</span></div>
+                        <div class="message">Event types: ${esc(types)}</div>
+                        <div class="meta">Rate limit: ${s.maxFrequencyPerMinute}/min</div>
+                    </div>
+                </li>`;
+            }).join('');
+        } catch (err) { console.error('Load services error:', err); }
+    }
+
+    async function loadServicesForForm() {
+        try {
+            const data = await api('GET', '/api/contracts');
+            registeredServices = data;
+            const select = document.getElementById('sendServiceName');
+            select.innerHTML = '<option value="">-- Select a service --</option>' +
+                data.map(s => `<option value="${esc(s.serviceName)}">${esc(s.serviceName)}</option>`).join('');
+            document.getElementById('sendEventType').innerHTML = '<option value="">-- Select service first --</option>';
+        } catch (err) { console.error('Load services for form error:', err); }
+    }
+
+    function updateEventTypes() {
+        const serviceName = document.getElementById('sendServiceName').value;
+        const eventSelect = document.getElementById('sendEventType');
+        const svc = registeredServices.find(s => s.serviceName === serviceName);
+        if (svc && svc.allowedEventTypes) {
+            const types = Array.isArray(svc.allowedEventTypes) ? svc.allowedEventTypes : JSON.parse(svc.allowedEventTypes);
+            eventSelect.innerHTML = types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+        } else {
+            eventSelect.innerHTML = '<option value="">-- No event types --</option>';
+        }
     }
 
     // Send Notification
@@ -581,9 +687,9 @@
             await api('POST', '/api/notifications/send', {
                 title: document.getElementById('sendTitle').value.trim(),
                 message: document.getElementById('sendMessage').value.trim(),
-                type: document.getElementById('sendType').value.trim(),
+                type: document.getElementById('sendEventType').value,
                 priority: document.getElementById('sendPriority').value,
-                serviceName: document.getElementById('sendServiceName').value.trim()
+                serviceName: document.getElementById('sendServiceName').value
             });
             showToast('Notification sent!', 'success');
             e.target.reset();
@@ -604,6 +710,40 @@
             await api('PUT', '/api/preferences', { inAppEnabled: document.getElementById('prefInApp').checked });
             showToast('Preferences updated', 'success');
         } catch (err) { showToast(err.message, 'error'); }
+    }
+
+    // Admin
+    // Failure Simulation
+    async function runFailureSimulations() {
+        const btn = document.getElementById('simulateBtn');
+        btn.disabled = true;
+        btn.textContent = 'Running...';
+        try {
+            const results = await api('POST', '/api/notifications/simulate-failures');
+            const container = document.getElementById('simulationResults');
+            container.innerHTML = '<h4 style="margin-bottom:8px;">Results:</h4>' +
+                results.map(r => {
+                    const isOk = r.status === 'SUCCESS';
+                    const color = isOk ? '#52C41A' : '#FF4D4F';
+                    const icon = isOk ? '&#9989;' : '&#10060;';
+                    return `
+                    <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:4px;background:${isOk?'#F0FFF0':'#FFF0F0'};border-radius:6px;border-left:3px solid ${color};">
+                        <span>${icon}</span>
+                        <div style="flex:1;">
+                            <strong>${esc(r.scenario)}</strong>
+                            <div style="font-size:12px;color:#666;">${esc(r.status)}${r.error ? ' - ' + esc(r.error) : ''}</div>
+                        </div>
+                        <button class="btn-sm trace" onclick="showTrace('${r.id}')" style="background:${color};color:#fff;border:none;">View Trace</button>
+                    </div>`;
+                }).join('') +
+                '<p style="color:#888;font-size:12px;margin-top:8px;">Go to Notifications tab to see failed items, or click "View Trace" to inspect each causality chain.</p>';
+            showToast('Simulations completed! Check traces for error details.', 'success');
+        } catch (err) {
+            showToast('Simulation error: ' + err.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Run Failure Scenarios';
+        }
     }
 
     // Admin
@@ -644,26 +784,57 @@
     }
 
     // WebSocket
+    let wsRetryCount = 0;
+    const WS_MAX_RETRIES = 10;
+
     function connectWebSocket() {
-        if (stompClient) { try { stompClient.disconnect(); } catch(e){} }
-        const socket = new SockJS('/ws?token=' + encodeURIComponent(token));
-        stompClient = Stomp.over(socket);
-        stompClient.debug = null; // disable debug logs
-        stompClient.connect({}, function () {
-            document.getElementById('wsStatus').className = 'ws-status connected';
-            document.getElementById('wsStatus').textContent = 'WS: Connected';
-            stompClient.subscribe('/user/queue/notifications', function (message) {
-                const body = JSON.parse(message.body);
-                showToast('[' + body.priority + '] ' + body.title, 'info');
-                loadOverview();
-                if (!document.getElementById('tab-notifications').classList.contains('hidden')) loadNotifications(currentPage);
-            });
-        }, function (err) {
+        if (!token) return;
+        if (stompClient) { try { stompClient.disconnect(); } catch(e){} stompClient = null; }
+
+        document.getElementById('wsStatus').className = 'ws-status disconnected';
+        document.getElementById('wsStatus').textContent = 'WS: Connecting...';
+
+        try {
+            const socket = new SockJS('/ws?token=' + encodeURIComponent(token));
+            stompClient = Stomp.over(socket);
+            stompClient.debug = function() {}; // suppress debug logs
+
+            stompClient.connect({},
+                function () {
+                    wsRetryCount = 0;
+                    document.getElementById('wsStatus').className = 'ws-status connected';
+                    document.getElementById('wsStatus').textContent = 'WS: Connected';
+                    stompClient.subscribe('/user/queue/notifications', function (message) {
+                        try {
+                            const body = JSON.parse(message.body);
+                            showToast('[' + body.priority + '] ' + body.title, 'info');
+                            loadOverview();
+                            if (!document.getElementById('tab-notifications').classList.contains('hidden')) loadNotifications(currentPage);
+                        } catch(e) { console.error('WS message parse error:', e); }
+                    });
+                },
+                function (err) {
+                    console.error('WebSocket error:', err);
+                    document.getElementById('wsStatus').className = 'ws-status disconnected';
+                    wsRetryCount++;
+                    if (wsRetryCount <= WS_MAX_RETRIES && token) {
+                        const delay = Math.min(wsRetryCount * 2000, 15000);
+                        document.getElementById('wsStatus').textContent = 'WS: Reconnecting (' + wsRetryCount + ')...';
+                        setTimeout(connectWebSocket, delay);
+                    } else {
+                        document.getElementById('wsStatus').textContent = 'WS: Disconnected';
+                    }
+                }
+            );
+        } catch (e) {
+            console.error('WebSocket init error:', e);
             document.getElementById('wsStatus').className = 'ws-status disconnected';
-            document.getElementById('wsStatus').textContent = 'WS: Error';
-            console.error('WebSocket error:', err);
-            setTimeout(connectWebSocket, 5000);
-        });
+            document.getElementById('wsStatus').textContent = 'WS: Disconnected';
+            if (wsRetryCount < WS_MAX_RETRIES && token) {
+                wsRetryCount++;
+                setTimeout(connectWebSocket, 5000);
+            }
+        }
     }
 
     // Utilities

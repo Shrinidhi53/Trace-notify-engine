@@ -7,8 +7,11 @@ import com.tracenotify.service.NotificationService;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -22,8 +25,15 @@ public class NotificationController {
     }
 
     @PostMapping("/send")
+    @PreAuthorize("hasRole('ADMIN')")
     public NotificationResponse send(@Valid @RequestBody NotificationRequest request) {
         return service.send(CurrentUser.id(), request);
+    }
+
+    @PostMapping("/simulate-failures")
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<Map<String, Object>> simulateFailures() {
+        return service.simulateFailures(CurrentUser.id());
     }
 
     @GetMapping("/me")

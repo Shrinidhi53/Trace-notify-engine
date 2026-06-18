@@ -37,7 +37,8 @@ public class CausalityService {
                         c.getStepOrder(),
                         c.getServiceName(),
                         c.getEventType(),
-                        c.getTimestamp().toString()))
+                        c.getTimestamp().toString(),
+                        c.getMetadata()))
                 .toList();
         return new CausalityResponse(notificationId, steps);
     }

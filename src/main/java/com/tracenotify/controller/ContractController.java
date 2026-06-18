@@ -12,7 +12,6 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/contracts")
-@PreAuthorize("hasRole('ADMIN')")
 public class ContractController {
 
     private final ContractService service;
@@ -22,6 +21,7 @@ public class ContractController {
     }
 
     @PostMapping("/register")
+    @PreAuthorize("hasRole('ADMIN')")
     public ServiceContract register(@Valid @RequestBody ContractRequest request) {
         return service.register(request);
     }
@@ -32,6 +32,7 @@ public class ContractController {
     }
 
     @GetMapping("/violations")
+    @PreAuthorize("hasRole('ADMIN')")
     public List<ContractViolation> violations() {
         return service.listViolations();
     }
